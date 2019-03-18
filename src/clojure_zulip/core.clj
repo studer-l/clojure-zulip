@@ -1,6 +1,7 @@
 (ns clojure-zulip.core
   (:require [clojure.core.async :as async]
             [cheshire.core :as cheshire]
+            [clojure.tools.logging :refer [info]]
             [clojure-zulip.client :as client]))
 
 ;; connection management
@@ -98,38 +99,49 @@
 
 (defn- subscribe-events*
   "Launch a goroutine that continuously publishes events on the
-  publish-channel until an exception is encountered or the connection
-  is closed."
-  [conn queue-id last-event-id publish-channel]
-  (async/go
-    (loop [last-event-id last-event-id]
-      (let [result (async/<! (events conn queue-id last-event-id false))]
-        ;; forward exceptions and break from loop, closing the channel
-        (if (instance? Exception result)
-          (do (async/>! publish-channel result)
-              (async/close! publish-channel))
-          ;; otherwise process events
-          (let [events (seq (:events result))]
-            (if events
-              (do (doseq [event events]
-                    ;; skip heartbeat events
-                    (if (not= (:type event) "heartbeat")
-                      (async/>! publish-channel event)))
-                  (recur (apply max (map :id events))))
-              (recur last-event-id))))))))
+  publish-channel until an exception is encountered, the connection
+  is closed or the kill-channel receives an event."
+  [conn queue-id last-event-id publish-channel kill-channel]
+  (async/go-loop [last-event-id last-event-id]
+    (let [[result ch]
+          (async/alts!
+           [kill-channel (events conn queue-id last-event-id false)]
+           :priority true)]
+      (cond
+        (= ch kill-channel) (info "kill signal received")
+        (nil? result) (info "publisher closed")
+        (instance? Exception result)
+        (do ;; forward exceptions and break from loop, closing the channel
+          (info "Caught exception, forwarding")
+          (async/>! publish-channel result)
+          (async/close! publish-channel)
+          (async/close! kill-channel))
+        :else ;; otherwise process events
+        (let [events (seq (:events result))]
+          (if events
+            (do
+              (doseq [event events]
+                ;; skip heartbeat events
+                (if (not= (:type event) "heartbeat")
+                  (async/>! publish-channel event)))
+              (recur (apply max (map :id events))))
+            (recur last-event-id)))))))
 
 (defn subscribe-events
   "Continuously issue requests against the events endpoint, updating
-  the last-event-id so that each event is only returned once. Returns a channel
-  to which events will be published. If an exception is encountered, it is also
-  passed through the channel, and the channel will be closed afterwards.
+  the last-event-id so that each event is only returned once. Returns two
+  channels, the first one publishes events. The second is a kill channel.
+  If an exception is encountered, it is also passed through the publisher
+  channel, and the channels will be closed afterwards.
   Use `register` to obtain a event queue."
   ([conn {queue-id :queue_id last-event-id :last_event_id}]
    (subscribe-events conn queue-id last-event-id))
   ([conn queue-id last-event-id]
-   (let [publish-channel (async/chan)]
-     (subscribe-events* conn queue-id last-event-id publish-channel)
-     publish-channel)))
+   (let [publish-channel (async/chan)
+         kill-channel (async/chan)]
+     (subscribe-events* conn queue-id last-event-id
+                        publish-channel kill-channel)
+     [publish-channel kill-channel])))
 
 ;; utility functions
 

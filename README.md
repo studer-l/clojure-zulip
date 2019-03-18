@@ -5,7 +5,7 @@ An asynchronous Clojure client for the Zulip API.
 ## Getting Started
 
 ```clojure
-[clojure-zulip "0.1.0-SNAPSHOT"]
+[org.clojars.studerl/clojure-zulip "0.2.0"]
 ```
 
 ### Connections
@@ -39,9 +39,9 @@ Functions are provided for the commands listed on the [Zulip endpoints page](zul
 A common pattern in bot design is to subscribe to a list of streams and then respond to any messages received on those streams or through private messages. The `subscribe-events` function is provided to make this easier.
 
 ```clojure
-(def queue-id (:queue_id (zulip/synchronous (zulip/register conn))))
-(def events-channel (zulip/subscribe-events conn queue-id))
-(loop [] (println (async/<!! events-channel)) (recur)) ;; any messages are published to this channel
+(def queue-id (:queue_id (zulip/sync* (zulip/register conn))))
+(def events-channel (first (zulip/subscribe-events conn queue-id))
+(loop [] (println (async/<!! events-channel)) (recur))) ;; any messages are published to this channel
 ```
 
 ## Echo Bot example
@@ -56,7 +56,7 @@ The following implements a bot that replies to messages of the form "!echo messa
 (def conn (zulip/connection
   {:username "echo-bot@zulip.com"
    :api-key "secret api key"
-   :base-url "https://api.zulip.com/v1"}))
+   :base-url "https://chat.zulip.com/api/v1"}))
 
 (defn handle-event
   "Check whether event contains a message starting with '!echo' if yes,
@@ -88,7 +88,7 @@ The following implements a bot that replies to messages of the form "!echo messa
 
 ;; Connect event input to handler channel
 (let [register-response (zulip/sync* (zulip/register conn))
-      event-channel (zulip/subscribe-events conn register-response)
+      event-channel kill-channel (zulip/subscribe-events conn register-response)
       handler-channel (mk-handler-channel conn)]
   (async/pipe event-channel handler-channel))
 ```
