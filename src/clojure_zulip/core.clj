@@ -1,7 +1,7 @@
 (ns clojure-zulip.core
   (:require [clojure.core.async :as async]
             [cheshire.core :as cheshire]
-            [clojure.tools.logging :refer [info]]
+            [clojure.tools.logging :refer [info debug trace]]
             [clojure-zulip.client :as client]))
 
 ;; connection management
@@ -28,6 +28,7 @@
   "Send a private message to specified users. Returns a channel with
   the result."
   [conn users message]
+  (trace "send-private-message" message "to" users)
   (client/request :POST conn "messages"
                   {:type "private"
                    :content message
@@ -37,6 +38,7 @@
   "Send a message to a specific stream. Returns a channel with the
   result."
   [conn stream subject message]
+  (trace "send-stream-message" message "in" stream "to" subject)
   (client/request :POST conn "messages"
                   {:type "stream"
                    :content message
@@ -57,9 +59,10 @@
   ([conn] (register conn ["message" "subscriptions" "realm_user" "pointer"]))
   ([conn event-types] (register conn event-types false))
   ([conn event-types apply-markdown]
-     (client/request :POST conn "register"
-                     {:event_types (cheshire/generate-string event-types)
-                      :apply_markdown apply-markdown})))
+   (trace "Requesting new event queue")
+   (client/request :POST conn "register"
+                   {:event_types (cheshire/generate-string event-types)
+                    :apply_markdown apply-markdown})))
 
 (defn events
   "Get events from the specified queue occuring after
@@ -103,6 +106,7 @@
   is closed or the kill-channel receives an event."
   [conn queue-id last-event-id publish-channel kill-channel]
   (async/go-loop [last-event-id last-event-id]
+    (debug "Waiting for new events, last-event-id =" last-event-id)
     (let [[result ch]
           (async/alts!
            [kill-channel (events conn queue-id last-event-id false)]
@@ -114,16 +118,17 @@
         (do ;; forward exceptions and break from loop, closing the channel
           (info "Caught exception, forwarding")
           (async/>! publish-channel result)
-          (async/close! publish-channel)
-          (async/close! kill-channel))
+          (async/close! publish-channel))
         :else ;; otherwise process events
         (let [events (seq (:events result))]
           (if events
             (do
               (doseq [event events]
                 ;; skip heartbeat events
-                (if (not= (:type event) "heartbeat")
-                  (async/>! publish-channel event)))
+                (if (= (:type event) "heartbeat")
+                  (trace "Received heartbeat event")
+                  (do (trace "Forwarding event")
+                      (async/>! publish-channel event))))
               (recur (apply max (map :id events))))
             (recur last-event-id)))))))
 
@@ -139,6 +144,7 @@
   ([conn queue-id last-event-id]
    (let [publish-channel (async/chan)
          kill-channel (async/chan)]
+     (trace "Starting new event subscription loop")
      (subscribe-events* conn queue-id last-event-id
                         publish-channel kill-channel)
      [publish-channel kill-channel])))

@@ -1,4 +1,4 @@
-(defproject clojure-zulip "0.2.0"
+(defproject org.clojars.studerl/clojure-zulip "0.2.1"
   :description "A Clojure client for the Zulip API"
   :url "https://github.com/tthieman/zulip-clojure"
   :license {:name "Eclipse Public License"
