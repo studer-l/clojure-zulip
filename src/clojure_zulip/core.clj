@@ -11,9 +11,10 @@
    :api-key nil
    :base-url "https://api.zulip.com/v1/"})
 
-(defn connection [user-opts]
-  "Create a new connection pool based on the given user-opts. Return a
-  dict of the connection elements."
+(defn connection
+  "Create a new connection pool based on the given user-opts. Return a dict of
+  the connection elements."
+  [user-opts]
   (let [opts (merge default-connection-opts user-opts)]
     {:opts opts}))
 
