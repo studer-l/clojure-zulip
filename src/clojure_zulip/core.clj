@@ -66,8 +66,8 @@
                     :apply_markdown apply-markdown})))
 
 (defn events
-  "Get events from the specified queue occuring after
-  last-event-id. Returns a channel."
+  "Get events from the specified queue occuring after last-event-id. Returns a
+  channel."
   ([conn queue-id last-event-id] (events conn queue-id last-event-id false))
   ([conn queue-id last-event-id dont-block]
    (client/request :GET conn "events"
@@ -101,25 +101,31 @@
 
 ;; higher-level convenience functions built on top of basic API commands
 
+(defn- timeout-exception? [r]
+  (some-> r ex-data :type (= :zulip-timeout)))
+
 (defn- subscribe-events*
   "Launch a goroutine that continuously publishes events on the
   publish-channel until an exception is encountered, the connection
-  is closed or the kill-channel receives an event."
+  is closed or the kill-channel receives an event.
+
+  Returns reason for closing event loop."
   [conn queue-id last-event-id publish-channel kill-channel]
   (async/go-loop [last-event-id last-event-id]
     (debug "Waiting for new events, last-event-id =" last-event-id)
-    (let [[result ch]
-          (async/alts!
-           [kill-channel (events conn queue-id last-event-id false)]
-           :priority true)]
+    (let [event-channel (events conn queue-id last-event-id false)
+          [result ch] (async/alts! [kill-channel event-channel]
+                                   :priority true)]
       (cond
-        (= ch kill-channel) (info "kill signal received")
-        (nil? result) (info "publisher closed")
-        (instance? Exception result)
-        (do ;; forward exceptions and break from loop, closing the channel
-          (info "Caught exception, forwarding")
-          (async/>! publish-channel result)
-          (async/close! publish-channel))
+        ;; handle errors / kill signal / invalid use
+        (= ch kill-channel) (do (info "kill signal received")
+                                :kill)
+        (nil? result) (do (info "publisher closed")
+                          :close)
+        (timeout-exception? result) (do (info "Polling timeout")
+                                        :timeout)
+        (instance? Exception result) (do (info "Caught exception, forwarding")
+                                         (async/>! publish-channel result))
         :else ;; otherwise process events
         (let [events (seq (:events result))]
           (if events

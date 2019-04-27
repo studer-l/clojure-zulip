@@ -43,12 +43,16 @@
           :request-args request-args
           :exception ex}))
 
+
 (defn- blocking-request
+  "Perform blocking request; Comes with a timeout of 90 seconds which is
+  reasonable for event queue where heartbeat is expected every minute."
   [connection-opts http-fn endpoint verb arg-symbol request-args]
   (try+
    (let [result (http-fn (uri (:base-url connection-opts) endpoint)
                          {:basic-auth [(:username connection-opts)
                                        (:api-key connection-opts)]
+                          :socket-timeout (* 90 1000) ;; 1.5 mins in millis
                           arg-symbol request-args})]
      (extract-body result))
    (catch [:status 400] ex
@@ -59,6 +63,10 @@
                       request-args zulip-error)
        (ex-info "Bad request" (assoc zulip-error
                                      :type :zulip-bad-request))))
+   (catch java.net.SocketException ex
+     (log-exception verb  (uri (:base-url connection-opts) endpoint)
+                    request-args "java.net.SocketException")
+     (ex-info "Timeout" {:type :zulip-timeout :endpoint endpoint}))
    (catch Exception ex
      ;; in any other case, put raw exception in channel
      (log-exception verb (uri (:base-url connection-opts) endpoint)
