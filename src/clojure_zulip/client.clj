@@ -2,8 +2,7 @@
   (:require [clojure.tools.logging :refer [error]]
             [clj-http.client :as http]
             [clojure.core.async :as async]
-            [cheshire.core :as cheshire]
-            [slingshot.slingshot :refer [try+]]))
+            [cheshire.core :as cheshire]))
 
 (defn- uri
   "Construct a URI from route fragments."
@@ -48,30 +47,40 @@
   "Perform blocking request; Comes with a timeout of 90 seconds which is
   reasonable for event queue where heartbeat is expected every minute."
   [connection-opts http-fn endpoint verb arg-symbol request-args]
-  (try+
-   (let [result (http-fn (uri (:base-url connection-opts) endpoint)
-                         {:basic-auth [(:username connection-opts)
-                                       (:api-key connection-opts)]
-                          :socket-timeout (* 90 1000) ;; 1.5 mins in millis
-                          arg-symbol request-args})]
-     (extract-body result))
-   (catch [:status 400] ex
-     ;; In case of bad request, parse zulip's error message and put it
-     ;; on the channel as IExceptionInfo
-     (let [zulip-error (extract-body ex)]
-       (log-exception verb (uri (:base-url connection-opts) endpoint)
-                      request-args zulip-error)
-       (ex-info "Bad request" (assoc zulip-error
-                                     :type :zulip-bad-request))))
-   (catch java.net.SocketException ex
-     (log-exception verb  (uri (:base-url connection-opts) endpoint)
-                    request-args "java.net.SocketException")
-     (ex-info "Timeout" {:type :zulip-timeout :endpoint endpoint}))
-   (catch Exception ex
-     ;; in any other case, put raw exception in channel
-     (log-exception verb (uri (:base-url connection-opts) endpoint)
-                    request-args ex)
-     ex)))
+  (try
+    (let [result (http-fn (uri (:base-url connection-opts) endpoint)
+                          {:basic-auth [(:username connection-opts)
+                                        (:api-key connection-opts)]
+                           :socket-timeout (* 90 1000) ;; 1.5 mins in millis
+                           arg-symbol request-args})]
+      (extract-body result))
+    (catch clojure.lang.ExceptionInfo ex
+      (let [data (ex-data ex)]
+        (case (:status data)
+          ;; Bad Request
+          400 (let [zulip-error (extract-body ex)]
+                (log-exception verb (uri (:base-url connection-opts) endpoint)
+                               request-args zulip-error)
+                (ex-info "Bad request" (assoc zulip-error
+                                              :type :zulip-bad-request)))
+          ;; Forbidden
+          401 (do (log-exception verb (uri (:base-url connection-opts) endpoint)
+                                 request-args "401 Unauthorized")
+                  (ex-info "Unauthorized" {:type :zulip-unauthorized}))
+          ;; not handled clj-http exception
+          (do (log-exception verb (uri (:base-url connection-opts)
+                                       endpoint)
+                             request-args ex)
+              ex))))
+    (catch java.net.SocketException ex
+      (log-exception verb (uri (:base-url connection-opts) endpoint)
+                     request-args "java.net.SocketException")
+      (ex-info "Timeout" {:type :zulip-timeout :endpoint endpoint}))
+    (catch Exception ex
+      ;; in any other case, put raw exception in channel
+      (log-exception verb (uri (:base-url connection-opts) endpoint)
+                     request-args ex)
+      ex)))
 
 (defn request
   "Issue a request to the Zulip API. Accepted verbs are :GET, :POST,
@@ -82,6 +91,7 @@
    (let [{:keys [connection-opts http-fn arg-symbol]} (request-opts verb connection)
          channel (async/chan)]
      (future
-       (async/>!! channel (blocking-request connection-opts http-fn endpoint
-                                            verb arg-symbol request-args)))
+       (let [result (blocking-request connection-opts http-fn endpoint
+                                      verb arg-symbol request-args)]
+         (async/>!! channel result)))
      channel)))
