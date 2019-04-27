@@ -99,32 +99,68 @@
   (client/request :PATCH conn "users/me/subscriptions"
                   {:delete (cheshire/generate-string streams)}))
 
-;; higher-level convenience functions built on top of basic API commands
+(defn- connection-failure-exception? [r]
+  (if-let [type (some-> r ex-data :type)]
+    (or (= :zulip-timeout type) (= :zulip-unknown-host type))))
 
-(defn- timeout-exception? [r]
-  (some-> r ex-data :type (= :zulip-timeout)))
+(defn cancelable-retry
+  "In go-loop awaits `async-fn` for non-exception result. If anything is put on
+  kill-channel, returns `:killed"
+  [kill-channel async-fn]
+  (let [publish-channel (async/chan)]
+    (async/go-loop [attempt 0]
+      (let [retry-channel (async-fn)
+            [result ch] (async/alts! [kill-channel retry-channel]
+                                     :priority true)]
+        (cond
+          (= ch kill-channel)
+          (do (trace "kill signal received while re-trying")
+              (async/>! publish-channel :killed))
+          (connection-failure-exception? result)
+          (do (trace "Re-trying failed, waiting before retrying")
+              (async/<! (async/timeout 5000))
+              (trace "Re-trying now")
+              (recur (inc attempt)))
+          (instance? Exception result)
+          (do (trace "Exception during retrying. Exception: " result)
+              (async/>! publish-channel :killed))
+          ;; success
+          :else (async/>! publish-channel result))))
+    publish-channel))
+
+;; higher-level convenience functions built on top of basic API commands
 
 (defn- subscribe-events*
   "Launch a goroutine that continuously publishes events on the
   publish-channel until an exception is encountered, the connection
-  is closed or the kill-channel receives an event.
-
-  Returns reason for closing event loop."
-  [conn queue-id last-event-id publish-channel kill-channel]
-  (async/go-loop [last-event-id last-event-id]
-    (debug "Waiting for new events, last-event-id =" last-event-id)
+  is closed or the kill-channel receives an event."
+  [conn queue-id last-event-id publish-channel kill-channel reconnect?]
+  (async/go-loop [queue-id queue-id
+                  last-event-id last-event-id]
+    (trace "Waiting for new events, last-event-id =" last-event-id)
     (let [event-channel (events conn queue-id last-event-id false)
           [result ch] (async/alts! [kill-channel event-channel]
                                    :priority true)]
       (cond
         ;; handle errors / kill signal / invalid use
-        (= ch kill-channel) (do (info "kill signal received")
-                                :kill)
-        (nil? result) (do (info "publisher closed")
-                          :close)
-        (timeout-exception? result) (do (info "Polling timeout")
-                                        :timeout)
-        (instance? Exception result) (do (info "Caught exception, forwarding")
+        (= ch kill-channel) (trace "kill signal received")
+        (connection-failure-exception? result)
+        (do
+          (trace "Connection failed,"
+                 (if reconnect? "retrying" "closing stream"))
+          (if reconnect?
+            (let [out-channel (cancelable-retry kill-channel #(register conn))
+                  result (async/<! out-channel)]
+              (when-not (= :killed result)
+                (let [{queue-id :queue_id last-event-id :last_event_id} result]
+                  (trace "reconnecting with queue-id" queue-id
+                         "and last-event-id" last-event-id)
+                  (if (and queue-id last-event-id)
+                    ;; successfully reconnected, start again from the top
+                    (recur queue-id last-event-id)))))
+            ;; if not reconnect?
+            result))
+        (instance? Exception result) (do (trace "Caught exception, forwarding")
                                          (async/>! publish-channel result))
         :else ;; otherwise process events
         (let [events (seq (:events result))]
@@ -136,16 +172,18 @@
                   (trace "Received heartbeat event")
                   (do (trace "Forwarding event")
                       (async/>! publish-channel event))))
-              (recur (apply max (map :id events))))
-            (recur last-event-id)))))))
+              (recur queue-id (apply max (map :id events))))
+            (recur queue-id last-event-id)))))))
 
-(defn subscribe-events
+(defn ^:deprecated subscribe-events
   "Continuously issue requests against the events endpoint, updating
   the last-event-id so that each event is only returned once. Returns two
   channels, the first one publishes events. The second is a kill channel.
   If an exception is encountered, it is also passed through the publisher
   channel, and the channels will be closed afterwards.
-  Use `register` to obtain a event queue."
+  Use `register` to obtain a event queue.
+
+  Deprecated, use `event-queue` instead, it automatically reconnects"
   ([conn {queue-id :queue_id last-event-id :last_event_id}]
    (subscribe-events conn queue-id last-event-id))
   ([conn queue-id last-event-id]
@@ -153,8 +191,23 @@
          kill-channel (async/chan)]
      (trace "Starting new event subscription loop")
      (subscribe-events* conn queue-id last-event-id
-                        publish-channel kill-channel)
+                        publish-channel kill-channel nil)
      [publish-channel kill-channel])))
+
+(defn event-queue
+  "Create a durable event publisher.
+  Returns two channels, the first one publishes a stream of messages. The second
+  can be used to close the stream (by putting anything into it).
+  Attempts to recover from server failures by re-trying and re-registering"
+  [conn]
+  (trace "Creating new durable event queue")
+  (let [publish-channel (async/chan)
+        kill-channel (async/chan)
+        registration (async/<!! (register conn))]
+    (subscribe-events* conn (:queue_id registration)
+                       (:last_event_id registration)
+                       publish-channel kill-channel true)
+    [publish-channel kill-channel]))
 
 ;; utility functions
 

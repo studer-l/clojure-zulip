@@ -37,8 +37,7 @@
     c))
 
 (defn mk-echo-bot [conn]
-  (let [register-response (zulip/sync* (zulip/register conn))
-        [event-channel kill-channel] (zulip/subscribe-events conn register-response)
+  (let [[event-channel kill-channel] (zulip/event-queue conn)
         handler-channel (mk-handler-channel conn)]
     ;; Connect event input to handler channel
     (async/pipe event-channel handler-channel)

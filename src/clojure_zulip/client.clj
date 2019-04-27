@@ -72,10 +72,14 @@
                                        endpoint)
                              request-args ex)
               ex))))
-    (catch java.net.SocketException ex
+    (catch java.net.SocketTimeoutException ex
       (log-exception verb (uri (:base-url connection-opts) endpoint)
                      request-args "java.net.SocketException")
       (ex-info "Timeout" {:type :zulip-timeout :endpoint endpoint}))
+    (catch java.net.UnknownHostException ex
+      (log-exception verb (uri (:base-url connection-opts) endpoint)
+                     request-args "java.net.UnknownHostException")
+      (ex-info "Unknown Host" {:type :zulip-unknown-host :endpoint endpoint}))
     (catch Exception ex
       ;; in any other case, put raw exception in channel
       (log-exception verb (uri (:base-url connection-opts) endpoint)
