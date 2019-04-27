@@ -21,7 +21,7 @@
     (:body response)
     (cheshire/parse-string (:body response) true)))
 
-(defn- request-opts
+(defn request-opts
   "Return dict of processed arguments for use by request."
   [verb connection]
   {:connection-opts (:opts connection)
