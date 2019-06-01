@@ -54,6 +54,14 @@
     (apply send-stream-message more)
     (apply send-private-message more)))
 
+(defn update-message
+  "Update content of message"
+  [conn msg-id content]
+  (trace "updating" msg-id "to" content)
+  (client/request :PATCH conn (str "messages/" msg-id)
+                  {:message_id msg-id
+                   :content content}))
+
 (defn register
   "Register a queue to listen for certain event types. Returns a
   channel with :queue_id, :max_message_id, and :last_event_id keys."

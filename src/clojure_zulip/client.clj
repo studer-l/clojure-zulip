@@ -92,10 +92,7 @@
   written."
   ([verb connection endpoint] (request verb connection endpoint {}))
   ([verb connection endpoint request-args]
-   (let [{:keys [connection-opts http-fn arg-symbol]} (request-opts verb connection)
-         channel (async/chan)]
-     (future
-       (let [result (blocking-request connection-opts http-fn endpoint
-                                      verb arg-symbol request-args)]
-         (async/>!! channel result)))
-     channel)))
+   (let [{:keys [connection-opts http-fn arg-symbol]} (request-opts verb connection)]
+     (async/thread
+       (blocking-request connection-opts http-fn endpoint
+                         verb arg-symbol request-args)))))
