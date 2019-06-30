@@ -49,10 +49,10 @@
   [connection-opts http-fn endpoint verb arg-symbol request-args]
   (try
     (let [result (http-fn (uri (:base-url connection-opts) endpoint)
-                          {:basic-auth [(:username connection-opts)
-                                        (:api-key connection-opts)]
+                          {:basic-auth     [(:username connection-opts)
+                                            (:api-key connection-opts)]
                            :socket-timeout (* 90 1000) ;; 1.5 mins in millis
-                           arg-symbol request-args})]
+                           arg-symbol      request-args})]
       (extract-body result))
     (catch clojure.lang.ExceptionInfo ex
       (let [data (ex-data ex)]
@@ -67,6 +67,11 @@
           401 (do (log-exception verb (uri (:base-url connection-opts) endpoint)
                                  request-args "401 Unauthorized")
                   (ex-info "Unauthorized" {:type :zulip-unauthorized}))
+          ;; Bad gateway; This is the "Zulip server is experiencing some
+          ;; technical difficulties" page that /sometimes/ shows up
+          502 (do (log-exception verb (uri (:base-url connection-opts) endpoint)
+                                 request-args "502 Bad gateway")
+                  (ex-info "Unauthorized" {:type :zulip-bad-gateway}))
           ;; not handled clj-http exception
           (do (log-exception verb (uri (:base-url connection-opts)
                                        endpoint)

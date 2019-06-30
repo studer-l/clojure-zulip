@@ -109,7 +109,9 @@
 
 (defn- connection-failure-exception? [r]
   (if-let [type (some-> r ex-data :type)]
-    (or (= :zulip-timeout type) (= :zulip-unknown-host type))))
+    (or (= :zulip-timeout type)
+        (= :zulip-unknown-host type)
+        (= :zulip-bad-gateway type))))
 
 (defn cancelable-retry
   "In go-loop awaits `async-fn` for non-exception result. If anything is put on
@@ -118,8 +120,8 @@
   (let [publish-channel (async/chan)]
     (async/go-loop [attempt 0]
       (let [retry-channel (async-fn)
-            [result ch] (async/alts! [kill-channel retry-channel]
-                                     :priority true)]
+            [result ch]   (async/alts! [kill-channel retry-channel]
+                                       :priority true)]
         (cond
           (= ch kill-channel)
           (do (trace "kill signal received while re-trying")
@@ -136,6 +138,9 @@
           :else (async/>! publish-channel result))))
     publish-channel))
 
+(defn- exception? [result]
+  (instance? Exception result))
+
 ;; higher-level convenience functions built on top of basic API commands
 
 (defn- subscribe-events*
@@ -147,8 +152,8 @@
                   last-event-id last-event-id]
     (trace "Waiting for new events, last-event-id =" last-event-id)
     (let [event-channel (events conn queue-id last-event-id false)
-          [result ch] (async/alts! [kill-channel event-channel]
-                                   :priority true)]
+          [result ch]   (async/alts! [kill-channel event-channel]
+                                     :priority true)]
       (cond
         ;; handle errors / kill signal / invalid use
         (= ch kill-channel) (trace "kill signal received")
@@ -158,7 +163,7 @@
                  (if reconnect? "retrying" "closing stream"))
           (if reconnect?
             (let [out-channel (cancelable-retry kill-channel #(register conn))
-                  result (async/<! out-channel)]
+                  result      (async/<! out-channel)]
               (when-not (= :killed result)
                 (let [{queue-id :queue_id last-event-id :last_event_id} result]
                   (trace "reconnecting with queue-id" queue-id
@@ -168,20 +173,20 @@
                     (recur queue-id last-event-id)))))
             ;; if not reconnect?
             result))
-        (instance? Exception result) (do (trace "Caught exception, forwarding")
-                                         (async/>! publish-channel result))
-        :else ;; otherwise process events
-        (let [events (seq (:events result))]
-          (if events
-            (do
-              (doseq [event events]
-                ;; skip heartbeat events
-                (if (= (:type event) "heartbeat")
-                  (trace "Received heartbeat event")
-                  (do (trace "Forwarding event")
-                      (async/>! publish-channel event))))
-              (recur queue-id (apply max (map :id events))))
-            (recur queue-id last-event-id)))))))
+        (exception? result) (do (trace "Caught exception, forwarding")
+                                (async/>! publish-channel result))
+        ;; otherwise process events
+        :else               (let [events (seq (:events result))]
+                              (if events
+                                (do
+                                  (doseq [event events]
+                                    ;; skip heartbeat events
+                                    (if (= (:type event) "heartbeat")
+                                      (trace "Received heartbeat event")
+                                      (do (trace "Forwarding event")
+                                          (async/>! publish-channel event))))
+                                  (recur queue-id (apply max (map :id events))))
+                                (recur queue-id last-event-id)))))))
 
 (defn ^:deprecated subscribe-events
   "Continuously issue requests against the events endpoint, updating
