@@ -107,11 +107,15 @@
   (client/request :PATCH conn "users/me/subscriptions"
                   {:delete (cheshire/generate-string streams)}))
 
-(defn- connection-failure-exception? [r]
+(defn- retry-failure?
+  "Returns truthy if this is a kind of connection failure that can be solved by
+  retrying after some delay."
+  [r]
   (if-let [type (some-> r ex-data :type)]
-    (or (= :zulip-timeout type)
-        (= :zulip-unknown-host type)
-        (= :zulip-bad-gateway type))))
+    (contains? #{:zulip-timeout :zulip-unknown-host :zulip-bad-gateway
+                 :zulip-internal-error} type)))
+
+(defn- exception? [ex] (instance? Exception ex))
 
 (defn cancelable-retry
   "In go-loop awaits `async-fn` for non-exception result. If anything is put on
@@ -120,26 +124,20 @@
   (let [publish-channel (async/chan)]
     (async/go-loop [attempt 0]
       (let [retry-channel (async-fn)
-            [result ch]   (async/alts! [kill-channel retry-channel]
+            [res ch]      (async/alts! [kill-channel retry-channel]
                                        :priority true)]
         (cond
-          (= ch kill-channel)
-          (do (trace "kill signal received while re-trying")
-              (async/>! publish-channel :killed))
-          (connection-failure-exception? result)
-          (do (trace "Re-trying failed, waiting before retrying")
-              (async/<! (async/timeout 5000))
-              (trace "Re-trying now")
-              (recur (inc attempt)))
-          (instance? Exception result)
-          (do (trace "Exception during retrying. Exception: " result)
-              (async/>! publish-channel :killed))
+          (= ch kill-channel)   (do (trace "retrying received kill signal")
+                                    (async/>! publish-channel :killed))
+          (retry-failure? res ) (do (trace "Re-trying failed, waiting")
+                                    (async/<! (async/timeout 5000))
+                                    (trace "Re-trying now")
+                                    (recur (inc attempt)))
+          (exception? res )     (do (trace "Exception during retrying: " res )
+                                    (async/>! publish-channel :killed))
           ;; success
-          :else (async/>! publish-channel result))))
+          :else                 (async/>! publish-channel res ))))
     publish-channel))
-
-(defn- exception? [result]
-  (instance? Exception result))
 
 ;; higher-level convenience functions built on top of basic API commands
 
@@ -152,31 +150,31 @@
                   last-event-id last-event-id]
     (trace "Waiting for new events, last-event-id =" last-event-id)
     (let [event-channel (events conn queue-id last-event-id false)
-          [result ch]   (async/alts! [kill-channel event-channel]
+          [res ch]      (async/alts! [kill-channel event-channel]
                                      :priority true)]
       (cond
         ;; handle errors / kill signal / invalid use
         (= ch kill-channel) (trace "kill signal received")
-        (connection-failure-exception? result)
+        (retry-failure? res)
         (do
           (trace "Connection failed,"
                  (if reconnect? "retrying" "closing stream"))
           (if reconnect?
             (let [out-channel (cancelable-retry kill-channel #(register conn))
-                  result      (async/<! out-channel)]
-              (when-not (= :killed result)
-                (let [{queue-id :queue_id last-event-id :last_event_id} result]
+                  res         (async/<! out-channel)]
+              (when-not (= :killed res )
+                (let [{queue-id :queue_id last-event-id :last_event_id} res ]
                   (trace "reconnecting with queue-id" queue-id
                          "and last-event-id" last-event-id)
                   (if (and queue-id last-event-id)
                     ;; successfully reconnected, start again from the top
                     (recur queue-id last-event-id)))))
             ;; if not reconnect?
-            result))
-        (exception? result) (do (trace "Caught exception, forwarding")
-                                (async/>! publish-channel result))
+            res ))
+        (exception? res)    (do (trace "Caught exception, forwarding")
+                                (async/>! publish-channel res ))
         ;; otherwise process events
-        :else               (let [events (seq (:events result))]
+        :else               (let [events (seq (:events res ))]
                               (if events
                                 (do
                                   (doseq [event events]

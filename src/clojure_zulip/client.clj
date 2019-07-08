@@ -67,11 +67,16 @@
           401 (do (log-exception verb (uri (:base-url connection-opts) endpoint)
                                  request-args "401 Unauthorized")
                   (ex-info "Unauthorized" {:type :zulip-unauthorized}))
+          ;; Internal server error; Occasionally happens at off times
+          ;; (like 6 in the morning on Sundays?!)
+          500 (do (log-exception verb (uri (:base-url connection-opts) endpoint)
+                                 request-args "500 Internal server error")
+                  (ex-info "Internal server error" {:type :zulip-internal-error}))
           ;; Bad gateway; This is the "Zulip server is experiencing some
           ;; technical difficulties" page that /sometimes/ shows up
           502 (do (log-exception verb (uri (:base-url connection-opts) endpoint)
                                  request-args "502 Bad gateway")
-                  (ex-info "Unauthorized" {:type :zulip-bad-gateway}))
+                  (ex-info "Bad gateway" {:type :zulip-bad-gateway}))
           ;; not handled clj-http exception
           (do (log-exception verb (uri (:base-url connection-opts)
                                        endpoint)
