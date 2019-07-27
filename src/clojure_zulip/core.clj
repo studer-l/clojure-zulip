@@ -2,7 +2,8 @@
   (:require [clojure.core.async :as async]
             [cheshire.core :as cheshire]
             [clojure.tools.logging :refer [info debug trace]]
-            [clojure-zulip.client :as client]))
+            [clojure-zulip.client :as client]
+            [clojure-zulip.util :refer [retry-failure? exception?]]))
 
 ;; connection management
 
@@ -106,18 +107,6 @@
   [conn streams]
   (client/request :PATCH conn "users/me/subscriptions"
                   {:delete (cheshire/generate-string streams)}))
-
-(defn- retry-failure?
-  "Returns truthy if this is a kind of connection failure that can be solved by
-  retrying after some delay."
-  [r]
-  (->> r
-       ex-data
-       :type
-       (contains? #{:zulip-bad-request :zulip-unauthorized})
-       not))
-
-(defn- exception? [ex] (instance? Exception ex))
 
 (defn cancelable-retry
   "In go-loop awaits `async-fn` for non-exception result. If anything is put on
