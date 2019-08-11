@@ -12,7 +12,7 @@
            (ex-info "Internal server error" {:type :zulip-internal-error}))))
   (t/testing "false for bad request"
     (t/is (not (sut/retry-failure? (ex-info "Bad request"
-                                            { :type :zulip-bad-request})))))
+                                            {:type :zulip-bad-request})))))
   (t/testing "false for bad auth"
     (t/is (not (sut/retry-failure? (ex-info "Unauthorized"
                                             {:type :zulip-unauthorized})))))

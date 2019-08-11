@@ -148,16 +148,15 @@
         (= ch kill-channel) (trace "kill signal received")
         (retry-failure? res)
         (do
-          (trace "Connection failed,"
-                 (if reconnect? "retrying" "closing stream"))
+          (trace "Connection failed," (if reconnect? "retrying" "closing"))
           (if reconnect?
             (let [out-channel (cancelable-retry kill-channel #(register conn))
                   res         (async/<! out-channel)]
               (when-not (= :killed res)
-                (let [{queue-id :queue_id last-event-id :last_event_id} res ]
-                  (trace "reconnecting with queue-id" queue-id
-                         "and last-event-id" last-event-id)
-                  (if (and queue-id last-event-id)
+                (let [{queue-id :queue_id last-event-id :last_event_id} res]
+                  (when (and queue-id last-event-id)
+                    (trace "reconnecting with queue-id" queue-id
+                           "and last-event-id" last-event-id)
                     ;; successfully reconnected, start again from the top
                     (recur queue-id last-event-id)))))
             ;; if not reconnect?
@@ -190,7 +189,7 @@
    (subscribe-events conn queue-id last-event-id))
   ([conn queue-id last-event-id]
    (let [publish-channel (async/chan)
-         kill-channel (async/chan)]
+         kill-channel    (async/chan)]
      (trace "Starting new event subscription loop")
      (subscribe-events* conn queue-id last-event-id
                         publish-channel kill-channel nil)

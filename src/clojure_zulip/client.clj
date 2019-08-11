@@ -42,7 +42,6 @@
           :request-args request-args
           :exception ex}))
 
-
 (defn- blocking-request
   "Perform blocking request; Comes with a timeout of 90 seconds which is
   reasonable for event queue where heartbeat is expected every minute."
@@ -94,7 +93,8 @@
       ;; in any other case, put raw exception in channel
       (log-exception verb (uri (:base-url connection-opts) endpoint)
                      request-args ex)
-      ex)))
+      (ex-info "Exception" {:type     :generic-exception
+                            :endpoint endpoint :exception ex}))))
 
 (defn request
   "Issue a request to the Zulip API. Accepted verbs are :GET, :POST,

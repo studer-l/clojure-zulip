@@ -1,4 +1,4 @@
-(defproject org.clojars.studerl/clojure-zulip "0.4.4"
+(defproject org.clojars.studerl/clojure-zulip "0.4.5"
   :description "A Clojure client for the Zulip API"
   :url "https://github.com/tthieman/zulip-clojure"
   :license {:name "Eclipse Public License"
@@ -7,4 +7,4 @@
                  [org.clojure/tools.logging "0.5.0"]
                  [org.clojure/core.async "0.4.500"]
                  [clj-http "3.10.0"]
-                 [cheshire "5.8.1"]])
+                 [cheshire "5.9.0"]])
